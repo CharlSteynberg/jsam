@@ -1,0 +1,5 @@
+({
+   mimeType : 'text/css',
+   comments : ['/* ', ' */'],
+   indented : true
+})

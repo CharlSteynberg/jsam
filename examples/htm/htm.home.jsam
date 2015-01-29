@@ -1,0 +1,30 @@
+
+   ({greet:'Welcome!'});
+
+   ({'text/html':
+   [
+      {head:
+      [
+         {title: 'JSAM Example'},
+
+         {style:'#yada', 'text/css':
+         {
+            h1:
+            { color:#0aa }
+         }},
+      ]},
+
+      {body:
+      [
+         {h1:Welcome},
+//      	({h2:Lalala}),
+         {span:'ello, today is just great!'},
+         {img:'examples/etc/original.jpg'},
+/*
+      	({
+            call:{span:a}
+      		with:(a=0, a<5, a++),
+      	})
+*/
+      ]}
+   ]});
