@@ -1,27 +1,31 @@
 <?php
 
-// change the CWD to avoid "../../"
+// change the CWD to avoid "../../" for every path
 // ----------------------------------------------------------------------------
    chdir('../../');
 // ----------------------------------------------------------------------------
 
 
-// require the jsam parser
+// some variables
+// ----------------------------------------------------------------------------
+   $vrs = $_GET;// !! for testing only,  please don't do this in production  (:
+
+   if (!isset($vrs['pth']))
+   { $vrs['pth'] = 'examples/htm/htm.home.jsam'; }
+// ----------------------------------------------------------------------------
+
+
+// require jsam
 // ----------------------------------------------------------------------------
    require_once('src/php/jsam.php');
 // ----------------------------------------------------------------------------
 
 
-// acquire compilers
+// acquire some compilers
 // ----------------------------------------------------------------------------
-   JSAM::acquire('src/php/cmp.htm.php');
-   JSAM::acquire('src/php/cmp.css.php');
+   JSAM::acquire('src/php/cmp.htm.php');  // for HTML
+   JSAM::acquire('src/php/cmp.css.php');  // for CSS
 // ----------------------------------------------------------------------------
-
-   $vrs = $_GET;
-
-   if (!isset($vrs['pth']))
-   { $vrs['pth'] = 'examples/htm/htm.home.jsam'; }
 
 
 	$rsl = JSAM::parse($vrs['pth'], $vrs);
