@@ -1,42 +1,5 @@
 <?php
 
-// CONVERT VARIABLES TO JSAM GLOBALS
-// ========================================================================================================
-   function jsam_globals($vrs)
-   {
-      $rsl = array('null'=>null, 'true'=>true, 'false'=>false);
-
-      if ($vrs === null)
-      { return $rsl; }
-
-      $tpe = gettype($vrs);
-
-      if ($tpe == 'object')
-      { $vrs = (array)$vrs; }
-      else
-      {
-         if ($tpe !== 'array')
-         {
-            echo 'JSAM globals expected as object or array';
-            exit;
-         }
-      }
-
-      foreach ($vrs as $k => $v)
-      {
-         $k = '$'.$k;
-
-         if (gettype($v) == 'object')
-         { $v = (array)$v; }
-
-         $rsl[$k] = $v;
-      }
-
-      return $rsl;
-   }
-// ========================================================================================================
-
-
 // JS-LIKE OBJECTS
 // ========================================================================================================
    class Object
@@ -69,6 +32,46 @@
       public static $conf = null;      // configuration
    // -------------------------------------------------------------------------
 
+
+   // covert array to JSAM globals (dollar keys)
+   // -------------------------------------------------------------------------
+      private function toJsamGlobals(&$vrs)
+      {
+         $rsl = array();
+
+         if ($vrs === null)
+         { return $rsl; }
+
+         $tpe = gettype($vrs);
+
+         if ($tpe == 'object')
+         { $vrs = (array)$vrs; }
+         else
+         {
+            if ($tpe !== 'array')
+            {
+               echo 'JSAM globals expected as object or array';
+               exit;
+            }
+         }
+
+         foreach ($vrs as $k => $v)
+         {
+            $k = '$'.$k;
+
+            if (gettype($v) == 'object')
+            { $v = (array)$v; }
+
+            $rsl[$k] = $v;
+         }
+
+         $vrs = $rsl;
+
+         return $rsl;
+      }
+   // -------------------------------------------------------------------------
+
+
    // error handling
    // -------------------------------------------------------------------------
       private function halt($err, $msg, $pos, $fnm, $crp)
@@ -82,6 +85,7 @@
          exit;
       }
    // -------------------------------------------------------------------------
+
 
    // create and assign context and value according to tree-path
    // -------------------------------------------------------------------------
@@ -154,12 +158,12 @@
 
    // parse expression item string data
    // -------------------------------------------------------------------------
-      private function exp_data($xp, $av)
+      private function exp_data($xp, &$gv, &$lv)
       {
       // arguments legend
       // ----------------------------------------------------------------------
       // $xp ~ expression
-      // $av ~ available vars  (global & defined)
+      // $gv ~ available vars  (global & defined)
       // ----------------------------------------------------------------------
 
       // locals
@@ -187,17 +191,26 @@
          elseif ((strlen($xp)<3) && (strpos($eo,$xp[0]) !== false))
          { $et='opr'; $ev=$xp; }                      // operator
          elseif (($se[0] == '{') && ($se[1] == '}'))
-         { $et='obj'; $ev=self::pobj($xp, $av); }     // object
+         { $et='obj'; $ev=self::pobj($xp, $gv); }     // object
          elseif (($se[0] == '[') && ($se[1] == ']'))
-         { $et='arr'; $ev=self::parr($xp, $av); }     // array
+         { $et='arr'; $ev=self::parr($xp, $gv); }     // array
          else
          {
-            if (preg_match('/^[a-zA-Z0-9\._]+$/', $xp))
+            if (preg_match('/^[a-zA-Z0-9\.\$_]+$/', $xp))
             {
-               if (array_key_exists(explode('.', $xp)[0], $av))
-               { $ir=$xp; $et='ref'; $ev=self::gapv($xp,$av); }
+               $ir = $xp;
+               $fk = explode('.', $xp)[0];
+               $gk = array_key_exists($fk, $gv);
+               $lk = array_key_exists($fk, $lv);
+
+               if ($gk)
+               { $ev=self::gapv($xp,$gv); }
+               elseif ($lk)
+               { $ev=self::gapv($xp,$lv); }
                else
-               { $ir=$xp; $et='ref'; $ev=null; }
+               { $ev=null; }
+
+               $et = self::typeOf($ev);
             }
             else
             {
@@ -223,12 +236,12 @@
 
    // prepare expression
    // -------------------------------------------------------------------------
-      private function prep_exp($xp, $av)
+      private function prep_exp($xp, &$gv, &$lv)
       {
       // legend
       // ----------------------------------------------------------------------
       // $xp ~ expression
-      // $av ~ available vars  (global & defined)
+      // $gv ~ global vars
       // ----------------------------------------------------------------------
 
       // locals
@@ -244,7 +257,7 @@
 
          $sl = strlen($xp);                           // string length
 
-         $aa = array();                               // argument array
+         $aa = array(array(array('')));               // argument array
          $ai = 0;                                     // argument index
          $si = 0;                                     // sub argument index
          $di = 0;                                     // definition index
@@ -274,24 +287,24 @@
             { $aa[$ai][$si][$di] .= $c; }             // record as string
             else
             {
-            // argument index & sub argument index
-            // ----------------------------------------------------------------
-               if ($c == ';') { $ai++; continue; }
-               if ($c == ',') { $si++; continue; }
-            // ----------------------------------------------------------------
-
             // arg & sub-arg define
             // ----------------------------------------------------------------
-               if (!isset($aa[$ai]))
+               if ($c == ';')
                {
-                  $aa[$ai] = array();
+                  $aa[] = array();
+                  end($aa);
+                  $ai = key($aa);
                   $si = 0;
+                  continue;
                }
 
-               if (!isset($aa[$ai][$si]))
+               if ($c == ',')
                {
-                  $aa[$ai][$si] = array('');
+                  $aa[$ai][] = array('');
+                  end($aa[$ai]);
+                  $si = key($aa[$ai]);
                   $di = 0;
+                  continue;
                }
             // ----------------------------------------------------------------
 
@@ -318,9 +331,12 @@
                   {
                   // if double operator :: add to previous & advance iterator
                   // ----------------------------------------------------------
-                     if ((strpos($eo,$xp[$i+1]) !== false) && ($xp[$i+1] != '-'))
+                     if ((isset($xp[$i+1])) && (strpos($eo,$xp[$i+1]) !== false))
                      {
-                        $aa[$ai][$si][$di] .= $xp[$i+1]; $i++;
+                        if (isset($xp[$i+2]) && is_numeric($xp[$i+2]) && ($xp[$i+1] == '-'))
+                        { /* do nothing :: fixes decrement */ }
+                        else
+                        { $aa[$ai][$si][$di] .= $xp[$i+1]; $i++; }
 
                         if ($i == ($sl -1))
                         { continue; }
@@ -362,16 +378,7 @@
 
                // convert to data :: ref tpe val
                // -------------------------------------------------------------
-                  $aa[$ai][$si][$di] = self::exp_data($ei, $av);
-
-                  if ($aa[$ai][$si][$di]['tpe'] == 'exp')
-                  {
-                     $tmp = $aa[$ai][$si][$di]['val'];
-                     $tmp = self::parse_exp($tmp, $av);
-
-                     $aa[$ai][$si][$di]['val'] = $tmp;
-                     $aa[$ai][$si][$di]['tpe'] = self::typeOf($tmp);
-                  }
+                  $aa[$ai][$si][$di] = self::exp_data($ei, $gv, $lv);
                // -------------------------------------------------------------
                }
             }
@@ -388,12 +395,13 @@
 
    // parse expressions
    // -------------------------------------------------------------------------
-      private function parse_exp($xp, $av)
+      private function parse_exp($xp, &$gv, &$lv)
       {
       // legend
       // ----------------------------------------------------------------------
       // $xp ~ expression
-      // $av ~ available vars  (global & defined)
+      // $gv ~ global vars
+      // $lv ~ local vars
       // ----------------------------------------------------------------------
 
       // remove matching parenthesis recursively
@@ -407,7 +415,7 @@
 
       // expression data
       // ----------------------------------------------------------------------
-         $exp = self::exp_data($xp, $av);
+         $exp = self::exp_data($xp, $gv, $lv);
       // ----------------------------------------------------------------------
 
 
@@ -423,53 +431,244 @@
             (
             // add
             // ----------------------------------------------------------------
-               '+'=> function($l, $r)
+               '+'=> function($L, $R, &$gv, &$lv)
                      {
-                        if (($l[0] == 'nbr') && ($r[0] == 'nbr'))
-                        { return ($l[1] + $r[1]); }
+                     // boolean to string
+                     // -------------------------------------------------------
+                        if ($L['tpe']=='bln'){$L['val']=$L['val']?'true':'false';}
+                        if ($R['tpe']=='bln'){$R['val']=$R['val']?'true':'false';}
+                     // -------------------------------------------------------
 
+                     // short data type concat
+                     // -------------------------------------------------------
+                        $dts = $L['tpe'].$R['tpe'];
+                     // -------------------------------------------------------
+
+                     // quick cases
+                     // -------------------------------------------------------
+                        switch ($dts)
+                        {
+                           case 'nbrnbr' : return ($L['val']+$R['val']);
+                           case 'strstr' : return ($L['val'].$R['val']);
+                           case 'strbln' : return ($L['val'].$R['val']);
+                           case 'blnstr' : return ($L['val'].$R['val']);
+                           case 'blnbln' : return ($L['val'].$R['val']);
+                           case 'blnnbr' : return ($L['val'].$R['val']);
+                           case 'nbrbln' : return ($L['val'].$R['val']);
+                        }
+                     // -------------------------------------------------------
+
+                     // negative number on left eats string
+                     // -------------------------------------------------------
+                        if ($dts == 'nbrstr')
+                        {
+                           if ($L['val'] < 0)
+                           { return substr($R['val'], ($L['val'] * -1), strlen($R['val'])); }
+                           else
+                           { return $L['val'].$R['val']; }
+                        }
+                     // -------------------------------------------------------
+
+                     // negative number on right eats string
+                     // -------------------------------------------------------
+                        if ($dts == 'strnbr')
+                        {
+                           if ($R['val'] < 0)
+                           { return substr($L['val'], 0, $R['val']); }
+                           else
+                           { return $L['val'].$R['val']; }
+                        }
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
                         return null;
+                     // -------------------------------------------------------
                      },
             // ----------------------------------------------------------------
 
             // subtract
             // ----------------------------------------------------------------
-               '-'=> function($l, $r)
+               '-'=> function($L, $R, &$gv, &$lv)
                      {
-                        if (($l[0] == 'nbr') && ($r[0] == 'nbr'))
-                        { return ($l[1] - $r[1]); }
+                     // short data type concat
+                     // -------------------------------------------------------
+                        $dts = $L['tpe'].$R['tpe'];
+                     // -------------------------------------------------------
 
+                     // quick cases
+                     // -------------------------------------------------------
+                        switch ($dts)
+                        {
+                           case 'nbrnbr' : return ($L['val'] - $R['val']);
+                           case 'nbrstr' : return substr($R['val'], $L['val'], strlen($R['val']));
+                           case 'strnbr' : return substr($L['val'], 0, (0-$R['val']));
+                           case 'strstr' : return str_replace($R['val'], '', $L['val']);
+                        }
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
                         return null;
+                     // -------------------------------------------------------
                      },
             // ----------------------------------------------------------------
 
             // multiply
             // ----------------------------------------------------------------
-               '*'=> function($l, $r)
+               '*'=> function($L, $R, &$gv, &$lv)
                      {
-                        if (($l[0] == 'nbr') && ($r[0] == 'nbr'))
-                        { return ($l[1] * $r[1]); }
+                     // short data type concat
+                     // -------------------------------------------------------
+                        $dts = $L['tpe'].$R['tpe'];
+                     // -------------------------------------------------------
 
+                     // quick cases
+                     // -------------------------------------------------------
+                        switch ($dts)
+                        {
+                           case 'nbrnbr' : return ($L['val'] * $R['val']);
+                        }
+                     // -------------------------------------------------------
+
+                     // left string multiply
+                     // -------------------------------------------------------
+                        if ($dts == 'strnbr')
+                        {
+                           $rsl = '';
+                           for ($i=0; $i<$R['val']; $i++) { $rsl .= $L['val']; }
+                           return $rsl;
+                        }
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
                         return null;
+                     // -------------------------------------------------------
                      },
             // ----------------------------------------------------------------
 
             // devide
             // ----------------------------------------------------------------
-               '/'=> function($l, $r)
+               '/'=> function($L, $R, &$gv, &$lv)
                      {
-                        if (($l[0] == 'nbr') && ($r[0] == 'nbr'))
-                        { return ($l[1] / $r[1]); }
+                     // short data type concat
+                     // -------------------------------------------------------
+                        $dts = $L['tpe'].$R['tpe'];
+                     // -------------------------------------------------------
 
+                     // quick cases
+                     // -------------------------------------------------------
+                        switch ($dts)
+                        {
+                           case 'nbrnbr' : return ($L['val'] / $R['val']);
+                           case 'strnbr' : return str_split($L['val'], $R['val']);
+                           case 'strstr' : return explode($R['val'], $L['val']);
+                        }
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
                         return null;
+                     // -------------------------------------------------------
                      },
             // ----------------------------------------------------------------
 
             // assign
             // ----------------------------------------------------------------
-               '='=> function($l, $r)
+               '='=> function($L, $R, &$gv, &$lv)
                      {
-                        return ($r[1]);
+                     // short data type concat
+                     // -------------------------------------------------------
+                        $dts = $L['tpe'].$R['tpe'];
+                     // -------------------------------------------------------
+
+                     // global
+                     // -------------------------------------------------------
+                        if ($L['ref'][0] == '$')
+                        {
+                           if (!array_key_exists($L['ref'], $gv))
+                           {
+                              $gv[$L['ref']] = $R['val'];
+                              return $R['val'];
+                           }
+
+                           return false;
+                        }
+                     // -------------------------------------------------------
+
+                     // local
+                     // -------------------------------------------------------
+                        $lv[$L['ref']] = $R['val'];
+                        return $R['val'];
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
+                        return false;
+                     // -------------------------------------------------------
+                     },
+            // ----------------------------------------------------------------
+
+            // increment
+            // ----------------------------------------------------------------
+               '++'=>function($L, $R, &$gv, &$lv)
+                     {
+                     // global
+                     // -------------------------------------------------------
+                        if (($L['ref'][0] == '$') && array_key_exists($L['ref'], $gv) && is_numeric($gv[$L['ref']]))
+                        {
+                           $gv[$L['ref']] -= 0;
+                           $gv[$L['ref']] += 1;
+                           return $gv[$L['ref']];
+                        }
+                     // -------------------------------------------------------
+
+                     // global
+                     // -------------------------------------------------------
+                        if (array_key_exists($L['ref'], $lv) && is_numeric($lv[$L['ref']]))
+                        {
+                           $lv[$L['ref']] -= 0;
+                           $lv[$L['ref']] += 1;
+                           return $lv[$L['ref']];
+                        }
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
+                        return null;
+                     // -------------------------------------------------------
+                     },
+            // ----------------------------------------------------------------
+
+            // dencrement
+            // ----------------------------------------------------------------
+               '--'=>function($L, $R, &$gv, &$lv)
+                     {
+                     // global
+                     // -------------------------------------------------------
+                        if (($L['ref'][0] == '$') && array_key_exists($L['ref'], $gv) && is_numeric($gv[$L['ref']]))
+                        {
+                           $gv[$L['ref']] -= 0;
+                           $gv[$L['ref']] -= 1;
+                           return $gv[$L['ref']];
+                        }
+                     // -------------------------------------------------------
+
+                     // global
+                     // -------------------------------------------------------
+                        if (array_key_exists($L['ref'], $lv) && is_numeric($lv[$L['ref']]))
+                        {
+                           $lv[$L['ref']] -= 0;
+                           $lv[$L['ref']] -= 1;
+                           return $lv[$L['ref']];
+                        }
+                     // -------------------------------------------------------
+
+                     // default
+                     // -------------------------------------------------------
+                        return null;
+                     // -------------------------------------------------------
                      },
             // ----------------------------------------------------------------
             );
@@ -478,13 +677,13 @@
 
          // prepare expression
          // -------------------------------------------------------------------
-            $eal = self::prep_exp($exp['val'], $av);  // exp arg list
-            $rsl = null;                              // result default is null
-            $eac = count($eal);                       // exp arg count
-            $red = array();                           // runtime exp data
+            $eal = self::prep_exp($exp['val'],$gv,$lv);  // exp arg list
+            $rsl = null;                                 // result default
+            $eac = count($eal);                          // exp arg count
+            $red = array();                              // runtime exp data
          // -------------------------------------------------------------------
 
-//print_r($eal[0][0]);
+
          // walk through args & sub-args and calculate $red values
          // -------------------------------------------------------------------
             foreach ($eal as $aai => $arg)
@@ -509,7 +708,7 @@
                   {
                   // set null to 0 where appropriate
                   // ----------------------------------------------------------
-                     if (($def['tpe']=='nul') && ($sub[$dai+1]['tpe']=='opr'))
+                     if (isset($sub[$dai+2]) && ($def['tpe']=='nul') && ($sub[$dai+1]['tpe']=='opr') && ($sub[$dai+2]['tpe']=='nbr'))
                      {
                         if (strpos('+-*/', $sub[$dai+1]['val'][0]) !== false)
                         {
@@ -519,33 +718,66 @@
                      }
                   // ----------------------------------------------------------
 
-                  // if item is exp :: parse it
-                  // ----------------------------------------------------------
-                     if ($def['tpe']=='exp')
-                     {
-//                        echo self::parse_exp($def['val'], $av);
-//                        $def['val'] = self::parse_exp($def['val'], $av);
-                     }
-                  // ----------------------------------------------------------
-
                   // start of calc sequence
                   // ----------------------------------------------------------
-                     if ($dai<1) {$dcr=$def['val'];}  // first item to result
+                     if ($dai<1) {$dcr=$def;}         // first item to result
                   // ----------------------------------------------------------
 
                   // calc sequence on opr
                   // ----------------------------------------------------------
                      if ($def['tpe'] == 'opr')
                      {
-                     // prep left and right for calc
+                     // get val from ref
                      // -------------------------------------------------------
-                        $l = array(self::typeOf($dcr), $dcr);
-                        $r = array(self::typeOf($sub[$dai+1]['val']), $sub[$dai+1]['val']);
+                        $lr = $dcr['ref'];
+
+                        if ($lr !== null)
+                        {
+                           if     (isset($gv[$lr])) {$dcr['val'] = $gv[$lr];}
+                           elseif (isset($lv[$lr])) {$dcr['val'] = $lv[$lr];}
+                        }
+                     // -------------------------------------------------------
+
+                     // next sequence item (for increment or decrementing opr)
+                     // -------------------------------------------------------
+                        $nsi = null;
+                     // -------------------------------------------------------
+
+                     // set next sequence item (value)
+                     // -------------------------------------------------------
+                        if (array_key_exists($dai+1, $sub))
+                        {
+                           $rr = $sub[$dai+1]['ref'];
+
+                           if ($rr !== null)
+                           {
+                              if     (isset($gv[$rr])) {$sub[$dai+1]['val'] = $gv[$rr];}
+                              elseif (isset($lv[$rr])) {$sub[$dai+1]['val'] = $lv[$rr];}
+                           }
+                        // ----------------------------------------------------
+
+                        // if next is exp, parse it
+                        // ----------------------------------------------------
+                           if ($sub[$dai+1]['tpe'] == 'exp')
+                           {
+                              $tmp = $sub[$dai+1]['val'];
+                              $tmp = self::parse_exp($tmp, $gv, $lv);
+
+                              $sub[$dai+1]['val'] = $tmp;
+                              $sub[$dai+1]['tpe'] = self::typeOf($tmp);
+                           }
+                        // ----------------------------------------------------
+
+                        // next sequence item
+                        // ----------------------------------------------------
+                           $nsi = $sub[$dai+1];
+                        // ----------------------------------------------------
+                        }
                      // -------------------------------------------------------
 
                      // calc sequence result
                      // -------------------------------------------------------
-                        $dcr = $calc[$def['val']]($l, $r);
+                        $dcr['val'] = $calc[$def['val']]($dcr, $nsi, $gv, $lv);
                      // -------------------------------------------------------
                      }
                   // ----------------------------------------------------------
@@ -554,7 +786,7 @@
 
                // set current sub to anwser
                // -------------------------------------------------------------
-                  $red[$aai][$sai] = $dcr;
+                  $red[$aai][$sai] = $dcr['val'];
                // -------------------------------------------------------------
                }
             // ----------------------------------------------------------------
@@ -586,7 +818,7 @@
 
    // parse objects
    // -------------------------------------------------------------------------
-      private function pobj($str, &$gdv)
+      private function pobj($str, &$gv)
       {
          $rsl = null;
          $str = trim($str, '{}');
@@ -601,7 +833,7 @@
 
    // parse arrays
    // -------------------------------------------------------------------------
-      private function parr($str, &$gdv)
+      private function parr($str, &$gv)
       {
          $rsl = null;
          $str = trim($str, '[]');
@@ -617,7 +849,7 @@
 
    // parse JSAM context into a multi-dimensional array, with given vars
    // -------------------------------------------------------------------------
-      private function get_context($jd, $gv, $fn)
+      private function get_context($jd, &$gv, $fn)
       {
       // arguments
       // ----------------------------------------------------------------------
@@ -666,6 +898,7 @@
          $sb = '';               // string buffer
          $eb = '';               // expression buffer
 
+         $lv = array();          // local variables
          $pa = array();          // path array
          $df = array();          // definition
          $rs = array();          // result
@@ -842,13 +1075,14 @@
 
                if ($el < 1)
                {
-                  $xr = self::parse_exp($eb, $gv);
+                  $xr = self::parse_exp($eb, $gv, $lv);
                   $eb = '';
 
                   echo "\n---------------\n";
-                  var_dump($xr);
+//                  var_dump($xr);
+                  print_r($xr);
                   echo "\n---------------";
-                  exit;
+//                  exit;
                }
             }
          // ----------------------------------------------------------------------
@@ -870,8 +1104,13 @@
 
    // prepare context
    // -------------------------------------------------------------------------
-      public function parse($dfn, $vrs=null, $obj=false)
+      public function parse($dfn, &$vrs=null, $obj=false)
       {
+      // convert given vars tp JSAM globals
+      // ----------------------------------------------------------------------
+         $vrs = self::toJsamGlobals($vrs);
+      // ----------------------------------------------------------------------
+
       // get cofig if not set
       // ----------------------------------------------------------------------
          if (self::$conf === null)
@@ -900,7 +1139,7 @@
 
       // get result as multi-dimensional array
       // ----------------------------------------------------------------------
-         $rsl = self::get_context($dfn, jsam_globals($vrs), $fnm);
+         $rsl = self::get_context($dfn, $vrs, $fnm);
       // ----------------------------------------------------------------------
 
 
