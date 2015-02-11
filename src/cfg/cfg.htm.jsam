@@ -1,6 +1,25 @@
 
-//   (a=(5-3); a<5; a++);
+//   (a=(5-3); a<5; a++)
+   ({a:{b:2}, c:[13, 'zyx'], d:{e:'lala'}})
 
-(-3+8, a=9, a <= 10)
 
-//   (a=1, b=2, c=5, c=c-1, c+0);
+/*
+
+($time % 'hh:mm:ss' % 'am/pm')
+
+(1354879653 % 'toDate yyyy-mm-dd')
+(5600 % 'toTime hh:mm:ss')
+
+(('abcdefgh' / 1) % 'toStr')
+('off' % 'toBln')
+
+(a=('abcde' / 1))
+
+(a=5, b='yay', c='happy', d='tadaa', e=9, f='boo')
+((a<5) ? b : (a<4) ? d : (e<4) ? c : f)
+
+
+(a=0, b=null, c=false, d='', e=9, f='yay', g=true)
+(a | b | c | d | e | f | g)
+
+*/
