@@ -22,49 +22,91 @@
 // ========================================================================================================
 
 
+
+
 // JSAM PARSER
 // ========================================================================================================
    class JSAM
    {
-   // public closures & properties
+   // compilers
    // -------------------------------------------------------------------------
-      public static $forge = array();  // compilers
-      public static $conf = null;      // configuration
+      public static $comp = array();
    // -------------------------------------------------------------------------
 
 
-   // covert array to JSAM globals (dollar keys)
+
+   // configuration
    // -------------------------------------------------------------------------
-      private function toJsamGlobals(&$vrs)
+      public static $conf = null;
+   // -------------------------------------------------------------------------
+
+
+
+   // error handling
+   // -------------------------------------------------------------------------
+      private function halt($msg='', $err='', $fnm='', $pos='', $crp='')
       {
-         if ($vrs === null)
-         { $vrs = array(); }
+         if ($msg === '')
+         { exit(); }
 
+         if ($err === '')
+         { $err = 'Reference'; }
+
+         $stk = '';
+
+         if ($fnm !== '')
+         {
+            if ($pos === '')
+            { $pos = array('?', '?'); }
+
+            $stk = '   ('.$fnm.' : '.$pos[0].','.$pos[1].')';
+
+            if ($crp !== '')
+            { $crp = '   ['.$crp.']'; }
+         }
+
+         echo "\n".'JSAM '.$err.' Error:  '.$msg.$stk.$crp;
+         exit;
+      }
+   // -------------------------------------------------------------------------
+
+
+
+   // get JSAM configuration
+   // -------------------------------------------------------------------------
+      public function set_conf($pth)
+      {
+         if (!file_exists($pth))
+         { self::halt('path "'.$pth.'" is undefined'); }
+
+         self::$conf = json_decode(file_get_contents($pth), true);
+      }
+   // -------------------------------------------------------------------------
+
+
+
+   // get vars & globals
+   // -------------------------------------------------------------------------
+      private function get_vars(&$vrs)
+      {
          $tpe = gettype($vrs);
 
+         if (($tpe !== 'object') && ($tpe !== 'array'))
+         { $vrs = array(); }
+
          if ($tpe == 'object')
-         { $vrs = (array)$vrs; }
-         else
-         {
-            if ($tpe !== 'array')
-            {
-               echo 'JSAM globals expected as object or array';
-               exit;
-            }
-         }
+         { $vrs = json_decode(json_encode($vrs)); }
 
          date_default_timezone_set(self::$conf['ltz']);
 
-         $vrs['UTSm'] = round(microtime(true), 3);
-         $vrs['date'] = strtotime('today midnight');
-         $vrs['time'] = (time() - $vrs['date']);
+         $vrs['TimeStamp'] = round(microtime(true), 3);
+         $vrs['Date'] = strtotime('today midnight');
+         $vrs['Time'] = (time() - $vrs['Date']);
 
          $rsl = array();
 
          foreach ($vrs as $k => $v)
          {
-            $k = '$'.$k;
-
             if (gettype($v) == 'object')
             { $v = (array)$v; }
 
@@ -78,19 +120,475 @@
    // -------------------------------------------------------------------------
 
 
-   // error handling
-   // -------------------------------------------------------------------------
-      private function halt($err, $msg, $pos, $fnm, $crp)
-      {
-         if ($fnm !== null)
-         { $apn = '('.$fnm.' : '.$pos[0].','.$pos[1].')'; }
-         else
-         { $apn = '('.$pos[0].','.$pos[1].')'; }
 
-         echo "\n".'JSAM '.$err.' Error: '.$msg.'   '.$apn.'   ['.$crp.']';
-         exit;
+   // GET COMPILER MODULE
+   // -------------------------------------------------------------------------
+      public function acquire($pth)
+      {
+         require($pth);
+
+         if (isset($module->exports))
+         { $mod = $module->exports; }
+         elseif (isset($module))
+         { $mod = $module; }
+         elseif (isset($exports))
+         { $mod = $exports; }
+         else
+         { self::halt('extension module expected from: "'.$pth.'"'); }
+
+         if (!isset($mod->config['mimeType']))
+         { self::halt('config & mime-type expected from: "'.$pth.'"'); }
+
+         self::$comp[$mod->config['mimeType']] = $mod;
+
+         return true;
       }
    // -------------------------------------------------------------------------
+
+
+
+   // prepare context
+   // -------------------------------------------------------------------------
+      public function parse($dfn, &$vrs=null, $obj=false, $ers=true)
+      {
+      // arguments legend
+      // ----------------------------------------------------------------------
+      // $dfn ~ definition
+      // $vrs ~ variables
+      // $obj ~ return as object
+      // $ers ~ report errors
+      // ----------------------------------------------------------------------
+
+      // locals
+      // ----------------------------------------------------------------------
+         $vrs = self::get_vars($vrs);                 // get JSAM context vars
+         $fnm = null;                                 // file-name
+      // ----------------------------------------------------------------------
+
+      // if definition is a path, get contents
+      // ----------------------------------------------------------------------
+         if ((gettype($dfn) === 'string') && (preg_match('/^[a-zA-Z0-9-\/\._]+$/', $dfn)))
+         {
+            if (!file_exists($dfn))
+            { self::halt('path "'.$dfn.'" is undefined'); }
+
+            $fnm = basename($dfn);
+            $dfn = file_get_contents($dfn);
+         }
+      // ----------------------------------------------------------------------
+
+      // minify jsam text, check for errors if $ers == true
+      // ----------------------------------------------------------------------
+         $dfn = str_replace(';)', ')', '('.self::minify($dfn, $fnm, $ers).')');
+      // ----------------------------------------------------------------------
+
+      // parse jsam text
+      // ----------------------------------------------------------------------
+         $rsl = self::parse_exp($dfn, $vrs);
+      // ----------------------------------------------------------------------
+
+      // if object is required, do this trick, hey don't judge, it works ;)
+      // ----------------------------------------------------------------------
+         if ($obj === true)
+         { $rsl = json_decode(json_encode($rsl)); }
+      // ----------------------------------------------------------------------
+
+      // return result
+      // ----------------------------------------------------------------------
+         return $rsl;
+      // ----------------------------------------------------------------------
+      }
+   // -------------------------------------------------------------------------
+
+
+
+   // minify jsam text, halt on -and report errors
+   // -------------------------------------------------------------------------
+      private function minify($jd, $fn, $er)
+      {
+      // arguments legend
+      // ----------------------------------------------------------------------
+      // $jd ~ jsam document
+      // $av ~ available variables
+      // $fn ~ file name
+      // $er ~ error reporting
+      // ----------------------------------------------------------------------
+
+
+      // constants (never changes during runtime)
+      // ----------------------------------------------------------------------
+         $dl = chr(186);                        // delimiter      (double pipe)
+         $ph = chr(176);                        // place holder   (doped block)
+         $ds = strlen($jd);                     // document size
+         $mi = ($ds-1);                         // maximum index
+         $st = array('"'=>1, "'"=>1, '`'=>1);   // string tokens  (each toggle)
+         $ct = array('//'=>"\n", '/*'=>'*/');   // comment tokens (begin & end)
+         $ws = "\r \n \t ";                      // white space
+      // ----------------------------------------------------------------------
+
+
+      // variables (changes during runtime)
+      // ----------------------------------------------------------------------
+         $lc = array(1,0);                      // curent Line and Column
+
+         $cn = 'doc';                           // context name
+         $ca = array($cn);                      // context array
+         $cl = 0;                               // context array
+         $cb = null;                            // context boolean
+
+         $dc = '';                              // double characters
+         $cr = 'ds';                            // current reference
+         $pr = $cr;                             // previous reference
+
+         $sc = false;                           // string context   (quoted)
+         $vc = false;                           // void context     (commented)
+         $rs = '';                              // result
+      // ----------------------------------------------------------------------
+
+
+      // no error checking
+      // ----------------------------------------------------------------------
+         if ($er === false)
+         {
+         // walk, minify
+         // -------------------------------------------------------------------
+            for ($i=0; $i<$ds; $i++)
+            {
+            // character variables
+            // ----------------------------------------------------------------
+               $pc = ($i>0 ? $jd[$i-1] : null);             // previous character
+               $cc = $jd[$i];                               // current character
+               $nc = ($i<$mi ? $jd[$i+1] : null);           // next character
+               $dc = (($nc !== null) ? ($cc.$nc) : null);   // double chars
+            // ----------------------------------------------------------------
+
+
+            // void context (comment) toggle
+            // ----------------------------------------------------------------
+               if ($sc === false)
+               {
+                  if ($vc === false)
+                  {
+                     if (($dc !== null) && isset($ct[$dc]))
+                     { $vc = $ct[$dc]; }
+                     elseif (($pc.$cc) == '*/')
+                     { continue; }
+                  }
+                  else
+                  {
+                     if ($cc == $vc)
+                     { $vc = false; }
+                     elseif (($dc !== null) && ($dc == $vc))
+                     {
+                        $vc = false;
+                        continue;
+                     }
+                  }
+               }
+            // ----------------------------------------------------------------
+
+
+            // skip the rest if current char is commented or escaped
+            // ----------------------------------------------------------------
+               if ($vc !== false)
+               { continue; }
+               elseif (($sc !== false) && ($pc == '\\') && ($cc !== $sc))
+               { continue; }
+            // ----------------------------------------------------------------
+
+
+            // quoted string context toggle
+            // ----------------------------------------------------------------
+               if (isset($st[$cc]))
+               {
+                  if ($sc === false)
+                  { $sc = $cc; }
+                  else if (($cc === $sc) && ($pc !== '\\'))
+                  { $sc = false; }
+               }
+               else
+               {
+                  if ($sc !== false)
+                  {
+                     if (($sc !== '`') && ($cc == "\n"))
+                     { $sc = false; }
+
+                     if ($cc == '\\')
+                     { continue; }
+                  }
+               }
+            // ----------------------------------------------------------------
+
+
+            // skip if whitespace
+            // ----------------------------------------------------------------
+               if (($sc === false) && (strpos($ws, $cc) !== false))
+               { continue; }
+            // ----------------------------------------------------------------
+
+            // fix string & add to result
+            // ----------------------------------------------------------------
+               if (($sc === false) && (($cc == '}') || ($cc == ']')))
+               {
+                  $xz = substr($rs, -1, 1);
+                  if (($xz == ',') || ($xz == ';'))
+                  { $rs = substr($rs, 0, -1); }
+               }
+
+               if (isset($st[$cc]) && ($pc != '\\'))
+               { $rs .= $ph; }
+               else
+               { $rs .= $cc; }
+            // ----------------------------------------------------------------
+            }
+         // -------------------------------------------------------------------
+
+         // return trimmed result
+         // -------------------------------------------------------------------
+            return trim($rs);
+         // -------------------------------------------------------------------
+         }
+      // ----------------------------------------------------------------------
+
+
+      // check errors
+      // ----------------------------------------------------------------------
+         if ($er === true)
+         {
+         // locals
+         // -------------------------------------------------------------------
+            $jc = self::$conf;                  // jsam config
+            $co = $jc['cat'];                   // context operators
+            $rd = $jc['dsc'];                   // reference description
+            $xm = $jc['crm'][$cn];              // context matrix
+            $xr = $xm[$pr];                     // reference matrix
+            $rp = "$cn.$pr.$cr";                // reference path
+         // -------------------------------------------------------------------
+
+
+         // walk, check errors, minify
+         // -------------------------------------------------------------------
+            for ($i=0; $i<$ds; $i++)
+            {
+            // character variables
+            // ----------------------------------------------------------------
+               $pc = ($i>0 ? $jd[$i-1] : null);             // previous character
+               $cc = $jd[$i];                               // current character
+               $nc = ($i<$mi ? $jd[$i+1] : null);           // next character
+               $dc = (($nc !== null) ? ($cc.$nc) : null);   // double chars
+            // ----------------------------------------------------------------
+
+
+            // line & column count
+            // ----------------------------------------------------------------
+               if ($cc == "\n") {$lc[0]++; $lc[1]=0;} else {$lc[1]++;}
+            // ----------------------------------------------------------------
+
+
+            // void context (comment) toggle
+            // ----------------------------------------------------------------
+               if ($sc === false)
+               {
+                  if ($vc === false)
+                  {
+                     if (($dc !== null) && isset($ct[$dc]))
+                     { $vc = $ct[$dc]; }
+                     elseif (($pc.$cc) == '*/')
+                     { continue; }
+                  }
+                  else
+                  {
+                     if ($cc == $vc)
+                     { $vc = false; }
+                     elseif (($dc !== null) && ($dc == $vc))
+                     {
+                        $vc = false;
+                        continue;
+                     }
+                  }
+               }
+            // ----------------------------------------------------------------
+
+
+            // skip the rest if current char is commented or escaped
+            // ----------------------------------------------------------------
+               if ($vc !== false)
+               { continue; }
+               elseif (($sc !== false) && ($pc == '\\') && ($cc !== $sc))
+               { continue; }
+            // ----------------------------------------------------------------
+
+
+            // quoted string context toggle
+            // ----------------------------------------------------------------
+               if (isset($st[$cc]))
+               {
+                  if ($sc === false)
+                  { $sc = $cc; }
+                  else if (($cc === $sc) && ($pc !== '\\'))
+                  { $sc = false; }
+               }
+               else
+               {
+                  if ($sc !== false)
+                  {
+                     if (($sc !== '`') && ($cc == "\n"))
+                     { $sc = false; }
+
+                     if ($cc == '\\')
+                     { continue; }
+                  }
+               }
+            // ----------------------------------------------------------------
+
+
+            // define context references
+            // ----------------------------------------------------------------
+               if (($cr !== null) && ($cr != 'ws'))
+               {
+                  $pr = $cr;                         // pvs ref  (for sub context)
+                  $xr = $xm[$pr];                    // set reference matrix
+               }
+
+               $cr = null;                           // reset current reference
+
+               if ($sc !== false) {$cr='qs';}        // ref is in str context
+               elseif (isset($st[$cc]))
+               { $cr='qs'; }  // ref is a str ctx char
+
+               if (($sc===false) && ($cr===null))    // ref is not str & is unset
+               {
+                  if (isset($jc['tkn'][$cc]))
+                  {
+                     $cr = $jc['tkn'][$cc];          // ref is a token
+
+                     if (($cn !== 'exp') && ($cr == 'mm') && (($pr == 'dn') || ($pr == 'pt')))
+                     { $cr = 'pt'; }
+                  }
+                  else
+                  {
+                     if (ctype_space($cc))
+                     { $cr = 'ws'; }                 // white space
+                     else
+                     {
+                        if (is_numeric($cc))
+                        { $cr = 'dn'; }              // decimal number
+                        else
+                        { $cr = 'pt'; }              // plain text
+                     }
+                  }
+               }
+
+               if (($cn == 'obj') && (strpos('os kn ld cd', $pr) !== false) && (strpos('pt qs dn so', $cr) !== false))
+               { $cr = 'kn'; }
+               elseif (($cr == 'dn') && ($pr == 'pt'))
+               { $cr = 'pt'; }
+               elseif (($pr == 'dn') && ($cr == 'pt'))
+               {
+                  $cr = 'pt';
+                  $pr = 'pt';
+
+                  $xr = $xm[$pr];
+               }
+
+
+               if ($i == $mi) {$cr = 'de';}          // document end
+
+               $rp = "$cn.$pr.$cr";                  // reference path
+            // ----------------------------------------------------------------
+
+
+            // validate context references if not string
+            // ----------------------------------------------------------------
+               $er = 0;
+
+               if ($xr[$cr] < 1) {$er++;}                     // if ref booln is 0
+               if (($cr == 'de') && ($cn != 'doc')) {$er++;}  // if brace mismatch
+
+               if ($er > 0)
+               { self::halt('unexpected "'.$rd[$cr].'"', 'Syntax', $fn, $lc, $rp); }
+            // ----------------------------------------------------------------
+
+
+            // define current context name and level
+            // ----------------------------------------------------------------
+               if ($sc === false)
+               {
+                  $cb = (isset($co[$cc]) ? $co[$cc][1] : null);  // get ctx bolean
+
+                  if ($cb !== null)
+                  {
+                     if ($cb > 0)
+                     { $ca[] = $co[$cc][0]; }                    // ctx level up
+                     elseif ($cn == $co[$cc][0])
+                     { array_pop($ca); }                         // ctx level down
+
+                     end($ca);
+
+                     $cl = key($ca);                             // context level
+                     $cn = $ca[$cl];                             // context name
+                     $cb = null;                                 // reset boolean
+                     $xm = $jc['crm'][$cn];                      // set ctx matrix
+                  }
+               }
+            // ----------------------------------------------------------------
+
+
+            // skip if whitespace
+            // ----------------------------------------------------------------
+               if (($sc === false) && (strpos($ws, $cc) !== false))
+               { continue; }
+            // ----------------------------------------------------------------
+
+            // fix string & add to result
+            // ----------------------------------------------------------------
+               if (($sc === false) && (($cc == '}') || ($cc == ']')))
+               {
+                  $xz = substr($rs, -1, 1);
+                  if (($xz == ',') || ($xz == ';'))
+                  { $rs = substr($rs, 0, -1); }
+               }
+
+               if (isset($st[$cc]) && ($pc != '\\'))
+               { $rs .= $ph; }
+               else
+               { $rs .= $cc; }
+            // ----------------------------------------------------------------
+            }
+         // -------------------------------------------------------------------
+
+         // return trimmed result
+         // -------------------------------------------------------------------
+            return trim($rs);
+         // -------------------------------------------------------------------
+         }
+      // ----------------------------------------------------------------------
+      }
+   // -------------------------------------------------------------------------
+
+
+
+   // simple identifier data type
+   // -------------------------------------------------------------------------
+      private function typeOf($d)
+      {
+         $t = gettype($d);
+
+         if (($t == 'integer') || ($t == 'double')) {$t = 'nbr';}
+         elseif ($t == 'string') {$t = 'str';}
+         elseif ($t == 'boolean') {$t = 'bln';}
+         elseif ($t == 'NULL') {$t = 'nul';}
+         elseif ($t == 'array')
+         {
+            $t = 'arr';
+            foreach ($d as $k => $v)
+            { if (!is_int($k)) {$t = 'obj'; break;} }
+         }
+
+         return $t;
+      }
+   // -------------------------------------------------------------------------
+
 
 
    // create and assign context and value according to tree-path
@@ -140,43 +638,22 @@
    // -------------------------------------------------------------------------
 
 
-   // simple identifier data type
+
+   // parse string to data
    // -------------------------------------------------------------------------
-      private function typeOf($d)
-      {
-         $t = gettype($d);
-
-         if (($t == 'integer') || ($t == 'double')) {$t = 'nbr';}
-         elseif ($t == 'string') {$t = 'str';}
-         elseif ($t == 'boolean') {$t = 'bln';}
-         elseif ($t == 'NULL') {$t = 'nul';}
-         elseif ($t == 'array')
-         {
-            $t = 'arr';
-            foreach ($d as $k => $v)
-            { if (!is_int($k)) {$t = 'obj'; break;} }
-         }
-
-         return $t;
-      }
-   // -------------------------------------------------------------------------
-
-
-   // parse expression item string data
-   // -------------------------------------------------------------------------
-      private function exp_data($xp, &$gv, &$lv)
+      private function str_to_data($xp, &$av)
       {
       // arguments legend
       // ----------------------------------------------------------------------
       // $xp ~ expression
-      // $gv ~ available vars  (global & defined)
+      // $av ~ available vars
       // ----------------------------------------------------------------------
 
       // locals
       // ----------------------------------------------------------------------
          $se = array($xp[0], substr($xp,-1,1));       // start & end chars
          $st = chr(176);                              // string toggle token
-         $eo = '+-*/=<>?:&|%(),;';                     // expression operators
+         $eo = '+-*/=<>?&|%(),;';                     // expression operators
          $et = null;                                  // expression type
          $ev = null;                                  // expression value
          $ir = null;                                  // identifier reference
@@ -206,15 +683,12 @@
             {
                $ir = $xp;
                $fk = explode('.', $xp)[0];
-               $gk = array_key_exists($fk, $gv);
-               $lk = array_key_exists($fk, $lv);
+               $ak = array_key_exists($fk, $av);
 
-               if ($gk)
-               { $ev=self::gapv($xp,$gv); }
-               elseif ($lk)
-               { $ev=self::gapv($xp,$lv); }
+               if ($ak)
+               { $ev=self::gapv($xp,$av); }
                else
-               { $ev=null; }
+               { $ev=$xp; }
 
                $et = self::typeOf($ev);
             }
@@ -225,12 +699,31 @@
 
                foreach ($ol as $oc)
                {
-                  if (strpos($xp, $oc) !== false)
-                  { $et = 'exp'; break; }             // expression
+                  $sp = strpos($xp, $oc);
+
+                  if ($sp !== false)
+                  {
+                     if ($oc == '%')
+                     {
+                        $l = ($sp -1);
+                        $r = ($sp +1);
+                        $v = "\r \n \t";
+
+                        if (isset($xp[$l]) && (strpos($v, $xp[$l]) !== false))
+                        { $et = 'exp'; break; }
+
+                        if (isset($xp[$r]) && (strpos($v, $xp[$r]) !== false))
+                        { $et = 'exp'; break; }
+                     }
+                     else
+                     { $et = 'exp'; break; }          // expression
+                  }
                }
 
                if ($et == 'exp')
                {
+                  $ev = trim($ev);
+
                   if (($ev[0].$ev[1] == '((') && (substr_count($ev, '(') > substr_count($ev, ')')))
                   { $ev = substr($ev, 1, strlen($ev)); }
                   else
@@ -253,173 +746,17 @@
    // -------------------------------------------------------------------------
 
 
-   // prepare expression
-   // -------------------------------------------------------------------------
-      private function prep_exp($xp, &$gv, &$lv)
-      {
-      // legend
-      // ----------------------------------------------------------------------
-      // $xp ~ expression
-      // $gv ~ global vars
-      // ----------------------------------------------------------------------
-
-      // locals
-      // ----------------------------------------------------------------------
-         $st = chr(176);                              // string toggle token
-
-         $pt = 'nul';                                 // previous type (=null)
-         $it = $pt;                                   // current type  (=null)
-         $ir = null;                                  // identifier reference
-
-         $rc = array($st.'({[',']})'.$st);            // record chars bgn & end
-         $rl = 0;                                     // record level
-
-         $sl = strlen($xp);                           // string length
-
-         $aa = array(array(array('')));               // argument array
-         $ai = 0;                                     // argument index
-         $si = 0;                                     // sub argument index
-         $di = 0;                                     // definition index
-
-         $eo = '+-*/=<>?:&|%';                        // expression operators
-      // ----------------------------------------------------------------------
-
-
-      // build exp parts
-      // ----------------------------------------------------------------------
-         for ($i=0; $i<$sl; $i++)
-         {
-         // current character
-         // -------------------------------------------------------------------
-            $c = $xp[$i];
-         // -------------------------------------------------------------------
-
-         // "record as string" toggle
-         // -------------------------------------------------------------------
-            if     (($rl < 1) && (strpos($rc[0], $c) !== false)) {$rl++;}   // bgn
-            elseif (($rl > 0) && (strpos($rc[1], $c) !== false)) {$rl--;}   // end
-         // -------------------------------------------------------------------
-
-         // build definiion sequence
-         // -------------------------------------------------------------------
-            if ($rl > 0)
-            { $aa[$ai][$si][$di] .= $c; }             // record as string
-            else
-            {
-            // arg & sub-arg define
-            // ----------------------------------------------------------------
-               if ($c == ';')
-               {
-                  $aa[] = array(array(''));
-                  end($aa);
-                  $ai = key($aa);
-                  $si = 0;
-                  $di = 0;
-                  continue;
-               }
-
-               if ($c == ',')
-               {
-                  $aa[$ai][] = array('');
-                  end($aa[$ai]);
-                  $si = key($aa[$ai]);
-                  $di = 0;
-                  continue;
-               }
-            // ----------------------------------------------------------------
-
-            // build current item
-            // ----------------------------------------------------------------
-               if (strpos($eo, $c) === false)         // not an operator
-               { $aa[$ai][$si][$di] .= $c; }          // build plain text
-               else
-               {
-               // sequence began with operator
-               // -------------------------------------------------------------
-                  if (strlen($aa[$ai][$si][$di]) < 1)
-                  { $aa[$ai][$si][$di] = 'null'; }
-               // -------------------------------------------------------------
-
-               // add operator to new slot
-               // -------------------------------------------------------------
-                  $aa[$ai][$si][] = $c; $di++;
-               // -------------------------------------------------------------
-
-               // only add next if next char is available
-               // -------------------------------------------------------------
-                  if ($i <= ($sl -1))
-                  {
-                  // if double operator :: add to previous & advance iterator
-                  // ----------------------------------------------------------
-                     if ((isset($xp[$i+1])) && (strpos($eo,$xp[$i+1]) !== false))
-                     {
-                        if (isset($xp[$i+2]) && is_numeric($xp[$i+2]) && ($xp[$i+1] == '-'))
-                        { /* do nothing :: fixes decrement */ }
-                        else
-                        { $aa[$ai][$si][$di] .= $xp[$i+1]; $i++; }
-
-                        if ($i == ($sl -1))
-                        { continue; }
-                     }
-                  // ----------------------------------------------------------
-
-                  // add sequence buffer to new slot
-                  // ----------------------------------------------------------
-                     $aa[$ai][$si][] = ''; $di++;
-                  // ----------------------------------------------------------
-
-                  // negative number
-                  // ----------------------------------------------------------
-                     if ((isset($xp[$i+2])) && ($xp[$i+1] == '-') && (is_numeric($xp[$i+2])))
-                     { $aa[$ai][$si][$di] .= '-'; $i++; }
-                  // ----------------------------------------------------------
-                  }
-               // -------------------------------------------------------------
-               }
-            // ----------------------------------------------------------------
-            }
-         // -------------------------------------------------------------------
-         }
-      // ----------------------------------------------------------------------
-
-
-      // convert string items to expression data array
-      // ----------------------------------------------------------------------
-         foreach ($aa as $ai => $sa)                  // arguments
-         {
-            foreach ($sa as $si => $da)               // sub arguments
-            {
-               foreach ($da as $di => $ei)            // expression items
-               {
-               // convert to data :: ref tpe val
-               // -------------------------------------------------------------
-                  $aa[$ai][$si][$di] = self::exp_data($ei, $gv, $lv);
-               // -------------------------------------------------------------
-               }
-            }
-         }
-      // ----------------------------------------------------------------------
-
-      // return result as expression sequence array
-      // ----------------------------------------------------------------------
-         return $aa;
-      // ----------------------------------------------------------------------
-      }
-   // -------------------------------------------------------------------------
-
-
 
    // calculate expressions
    // -------------------------------------------------------------------------
-      private function calc_exp($ld, $op, $rd, &$gv, &$lv)
+      private function calc_exp($ld, $op, $rd, &$av)
       {
       // arguments legend
       // ----------------------------------------------------------------------
       // $ld ~ left definition
       // $op ~ operator
       // $rd ~ right definition
-      // $gv ~ global vars
-      // $lv ~ local vars
+      // $av ~ available vars
       // ----------------------------------------------------------------------
 
       // data type pair
@@ -639,11 +976,11 @@
          {
          // global
          // -------------------------------------------------------------------
-            if ($ld['ref'][0] == '$')
+            if (ctype_upper($ld['ref'][0]))
             {
-               if (!array_key_exists($ld['ref'], $gv))
+               if (!array_key_exists($ld['ref'], $av))
                {
-                  $gv[$ld['ref']] = $rd['val'];
+                  $av[$ld['ref']] = $rd['val'];
                   return $rd['val'];
                }
 
@@ -653,8 +990,8 @@
 
          // local
          // -------------------------------------------------------------------
-            $lv[$ld['ref']] = $rd['val'];
-            return $rd['val'];
+            $av[$ld['ref']] = $rd['val'];
+            return true;
          // -------------------------------------------------------------------
          }
       // ----------------------------------------------------------------------
@@ -955,7 +1292,7 @@
 
          // date
          // -------------------------------------------------------------------
-            if ($ld['ref'] == '$date')
+            if ($ld['ref'] == 'Date')
             {
             // locals
             // ----------------------------------------------------------------
@@ -1056,18 +1393,18 @@
                   $ld['val'] -= 0;
                }
 
-               return array('ref'=>'$time', 'tpe'=>'nbr', 'val'=>$ld['val']);
+               return array('ref'=>'Time', 'tpe'=>'nbr', 'val'=>$ld['val']);
             }
          // -------------------------------------------------------------------
 
 
          // time
          // -------------------------------------------------------------------
-            if ($ld['ref'] == '$time')
+            if ($ld['ref'] == 'Time')
             {
             // locals
             // ----------------------------------------------------------------
-               $ts = ($gv['$date'] + $ld['val']);
+               $ts = ($av['Date'] + $ld['val']);
                $ms = strtolower($rd['val'].'');
                $ml = strlen($ms);
                $rs = array();
@@ -1249,10 +1586,8 @@
             $lr = null;
             $gl = null;
 
-            if (($ld['ref'][0] == '$') && array_key_exists($ld['ref'], $gv))
-            { $lr = $gv[$ld['ref']]; $gl = 'gv'; }    // on global var
-            elseif (array_key_exists($ld['ref'], $lv))
-            { $lr = $lv[$ld['ref']]; $gl = 'lv'; }    // on local var
+            if (array_key_exists($ld['ref'], $av))
+            { $lr = $av[$ld['ref']]; }
 
             if ($lr !== null)
             { $lr = array('ref'=>null, 'tpe'=>self::typeOf($lr), 'val'=>$lr); }
@@ -1308,18 +1643,13 @@
 
          // calculate result
          // -------------------------------------------------------------------
-            $rs = self::calc_exp($lr, $op[0], $rd, $gv, $lv);
+            $rs = self::calc_exp($lr, $op[0], $rd, $av);
          // -------------------------------------------------------------------
 
          // if ref is defined
          // -------------------------------------------------------------------
-            if (($gl !== null) && ($op[1] == '='))
-            {
-               if ($gl == 'gv')
-               { $gv[$ld['ref']] = $rs; }
-               elseif ($gl == 'lv')
-               { $lv[$ld['ref']] = $rs; }
-            }
+            if ($op[1] == '=')
+            { $av[$ld['ref']] = $rs; }
          // -------------------------------------------------------------------
 
          // return result
@@ -1339,17 +1669,15 @@
 
 
 
-   // parse expressions
+   // parse jsam text
    // -------------------------------------------------------------------------
-      private function parse_exp($xp, &$gv, &$lv)
+      private function parse_exp($xp, &$av)
       {
       // arguments legend
       // ----------------------------------------------------------------------
       // $xp ~ expression
-      // $gv ~ global vars
-      // $lv ~ local vars
+      // $av ~ available variables
       // ----------------------------------------------------------------------
-
 
       // remove matching parenthesis
       // ----------------------------------------------------------------------
@@ -1357,37 +1685,194 @@
       // ----------------------------------------------------------------------
          if ((($xp[0] == '(') && substr($xp, -1, 1) == ')'))
          { $xp = substr($xp, 1, -1); }
+
+         if (($xp[0] == '(') && (substr($xp, -1, 1) == ')') && (substr_count($xp, '(') < 2) && (substr_count($xp, ')') < 2))
+         { $xp = substr($xp, 1, -1); }
       // ----------------------------------------------------------------------
 
 
       // expression data
       // ----------------------------------------------------------------------
-         $exp = self::exp_data($xp, $gv, $lv);
+         $exp = self::str_to_data($xp, $av);
       // ----------------------------------------------------------------------
 
-//print_r($exp);
-//exit;
 
       // return data if not expression, else run exp
       // ----------------------------------------------------------------------
          if ($exp['tpe'] !== 'exp')
          {
             if ($exp['tpe'] == 'obj')
-            { return self::parse_obj($exp['val'], $gv, $lv); }
+            { return self::parse_obj($exp['val'], $av); }
             elseif ($exp['tpe'] == 'arr')
-            { return self::parse_arr($exp['val'], $gv, $lv); }
+            { return self::parse_arr($exp['val'], $av); }
+            else
+            { return $exp['val']; }
          }
          else
          {
+         // locals
+         // ----------------------------------------------------------------------
+            $xp = $exp['val'];                           // expression text
+            $st = chr(176);                              // string toggle token
+
+            $pt = 'nul';                                 // previous type (=null)
+            $it = $pt;                                   // current type  (=null)
+            $ir = null;                                  // identifier reference
+
+            $rc = array('({[',']})');                    // record chars bgn & end
+            $rl = array();                               // record level
+            $qs = 0;                                     // quoted string
+
+            $sl = strlen($xp);                           // string length
+
+            $aa = array(array(array('')));               // argument array
+            $ai = 0;                                     // argument index
+            $si = 0;                                     // sub argument index
+            $di = 0;                                     // definition index
+
+            $eo = '+-*/=<>?:&|%';                        // expression operators
+         // ----------------------------------------------------------------------
+
+
          // prepare expression
+         // ----------------------------------------------------------------------
+            for ($i=0; $i<$sl; $i++)
+            {
+            // current character
+            // -------------------------------------------------------------------
+               $c = $xp[$i];
+            // -------------------------------------------------------------------
+
+            // "record as string" toggle
+            // -------------------------------------------------------------------
+               if ($c == $st){ $qs = (($qs < 1) ? 1 : 0); }
+
+               if (strpos($rc[0], $c) !== false)
+               {
+                  $fi = (-1 - strpos($rc[0], $c));
+                  $ec = substr($rc[1], $fi, 1);
+                  $rl[] = $ec;
+
+               }  // bgn
+               elseif (strpos($rc[1], $c) !== false)
+               {
+                  end($rl);
+                  $ec = $rl[key($rl)];
+
+                  if ($c == $ec)
+                  { array_pop($rl); }
+
+               }  // end
+            // -------------------------------------------------------------------
+
+            // build definiion sequence
+            // -------------------------------------------------------------------
+               if ((count($rl) > 0) || ($qs > 0))
+               { $aa[$ai][$si][$di] .= $c; }             // record as string
+               else
+               {
+               // arg & sub-arg define
+               // ----------------------------------------------------------------
+                  if ($c == ';')
+                  {
+                     $aa[] = array(array(''));
+                     end($aa);
+                     $ai = key($aa);
+                     $si = 0;
+                     $di = 0;
+                     continue;
+                  }
+
+                  if ($c == ',')
+                  {
+                     $aa[$ai][] = array('');
+                     end($aa[$ai]);
+                     $si = key($aa[$ai]);
+                     $di = 0;
+                     continue;
+                  }
+               // ----------------------------------------------------------------
+
+               // build current item
+               // ----------------------------------------------------------------
+                  if (strpos($eo, $c) === false)         // not an operator
+                  { $aa[$ai][$si][$di] .= $c; }          // build plain text
+                  else
+                  {
+                  // sequence began with operator
+                  // -------------------------------------------------------------
+                     if (strlen($aa[$ai][$si][$di]) < 1)
+                     { $aa[$ai][$si][$di] = 'null'; }
+                  // -------------------------------------------------------------
+
+                  // add operator to new slot
+                  // -------------------------------------------------------------
+                     $aa[$ai][$si][] = $c; $di++;
+                  // -------------------------------------------------------------
+
+                  // only add next if next char is available
+                  // -------------------------------------------------------------
+                     if ($i <= ($sl -1))
+                     {
+                     // if double operator :: add to previous & advance iterator
+                     // ----------------------------------------------------------
+                        if ((isset($xp[$i+1])) && (strpos($eo,$xp[$i+1]) !== false))
+                        {
+                           if (isset($xp[$i+2]) && is_numeric($xp[$i+2]) && ($xp[$i+1] == '-'))
+                           { /* do nothing :: fixes decrement */ }
+                           else
+                           { $aa[$ai][$si][$di] .= $xp[$i+1]; $i++; }
+
+                           if ($i == ($sl -1))
+                           { continue; }
+                        }
+                     // ----------------------------------------------------------
+
+                     // add sequence buffer to new slot
+                     // ----------------------------------------------------------
+                        $aa[$ai][$si][] = ''; $di++;
+                     // ----------------------------------------------------------
+
+                     // negative number
+                     // ----------------------------------------------------------
+                        if ((isset($xp[$i+2])) && ($xp[$i+1] == '-') && (is_numeric($xp[$i+2])))
+                        { $aa[$ai][$si][$di] .= '-'; $i++; }
+                     // ----------------------------------------------------------
+                     }
+                  // -------------------------------------------------------------
+                  }
+               // ----------------------------------------------------------------
+               }
+            // -------------------------------------------------------------------
+            }
+         // ----------------------------------------------------------------------
+
+
+         // convert string items to data
+         // ----------------------------------------------------------------------
+            foreach ($aa as $ai => $sa)                  // arguments
+            {
+               foreach ($sa as $si => $da)               // sub arguments
+               {
+                  foreach ($da as $di => $ei)            // expression items
+                  {
+                  // convert to data :: ref tpe val
+                  // -------------------------------------------------------------
+                     $aa[$ai][$si][$di] = self::str_to_data(trim($ei), $av);
+                  // -------------------------------------------------------------
+                  }
+               }
+            }
+         // ----------------------------------------------------------------------
+
+
+         // expression locals
          // -------------------------------------------------------------------
-            $eal = self::prep_exp($exp['val'],$gv,$lv);  // exp arg list
+            $eal = $aa;                                  // exp arg list
             $rsl = null;                                 // result default
             $eac = count($eal);                          // exp arg count
             $red = array();                              // runtime exp data
          // -------------------------------------------------------------------
-//print_r($eal);
-//exit;
 
 
          // walk through args & sub-args and calculate $red values
@@ -1406,6 +1891,7 @@
                // definition calculated result
                // -------------------------------------------------------------
                   $dcr = null;
+                  $omt = false;
                // -------------------------------------------------------------
 
                // walk through subs
@@ -1429,7 +1915,7 @@
                      if ($def['tpe'] == 'exp')
                      {
                         $tmp = $def['val'];
-                        $tmp = self::parse_exp($tmp, $gv, $lv);
+                        $tmp = self::parse_exp($tmp, $av);
 
                         $def['val'] = $tmp;
                         $def['tpe'] = self::typeOf($tmp);
@@ -1452,8 +1938,7 @@
 
                         if (($lr !== null) && (!isset($dcr['rcr'])))
                         {
-                           if     (isset($gv[$lr])) {$dcr['val'] = $gv[$lr];}
-                           elseif (isset($lv[$lr])) {$dcr['val'] = $lv[$lr];}
+                           if (isset($av[$lr])) {$dcr['val'] = $av[$lr];}
                         }
                      // -------------------------------------------------------
 
@@ -1470,8 +1955,7 @@
 
                            if ($rr !== null)
                            {
-                              if     (isset($gv[$rr])) {$sub[$dai+1]['val'] = $gv[$rr];}
-                              elseif (isset($lv[$rr])) {$sub[$dai+1]['val'] = $lv[$rr];}
+                              if (isset($av[$rr])) {$sub[$dai+1]['val'] = $av[$rr];}
                            }
                         // ----------------------------------------------------
 
@@ -1480,7 +1964,7 @@
                            if ($sub[$dai+1]['tpe'] == 'exp')
                            {
                               $tmp = $sub[$dai+1]['val'];
-                              $tmp = self::parse_exp($tmp, $gv, $lv);
+                              $tmp = self::parse_exp($tmp, $av);
 
                               $sub[$dai+1]['val'] = $tmp;
                               $sub[$dai+1]['tpe'] = self::typeOf($tmp);
@@ -1496,14 +1980,19 @@
 
                      // calc sequence result
                      // -------------------------------------------------------
-                        $pxp = array('lft'=>$dcr, 'opr'=>$def['val'], 'rgt'=>$nsi);
-                        $val = self::calc_exp($dcr, $def['val'], $nsi, $gv, $lv);
+                        $val = self::calc_exp($dcr, $def['val'], $nsi, $av);
                         $tpe = self::typeOf($val);
                         $ref = $dcr['ref'];
+                        $opr = $def['val'];
 
                         $dcr['ref'] = $ref;
                         $dcr['tpe'] = $tpe;
                         $dcr['val'] = $val;
+
+                        $oro = array('='=>1, '+='=>1, '-='=>1, '*='=>1, '/='=>1);
+
+                        if (isset($oro[$opr]))
+                        { $omt = true; }
                      // -------------------------------------------------------
                      }
                   // ----------------------------------------------------------
@@ -1512,7 +2001,9 @@
 
                // set current sub to anwser
                // -------------------------------------------------------------
-                  $red[$aai][$sai] = array('exp'=>$pxp, 'rsl'=>$dcr);
+                  if (!$omt)
+                  { $red[$aai][] = $dcr['val']; }
+//                  print_r($dcr);
                // -------------------------------------------------------------
                }
             // ----------------------------------------------------------------
@@ -1520,25 +2011,46 @@
          // -------------------------------------------------------------------
 
 
-         // determine result
+         // build result
          // -------------------------------------------------------------------
-            if ($eac == 1)
+            $eac = count($red);
+            $rsl = null;
+
+            if ($eac < 2)
             {
-               if (count($red[0]) < 2)
-               { $rsl = $red[0][0]['rsl']['val']; }
-               else
-               { $rsl = $red[0]; }
+               if (count($red[0]) > 0)
+               {
+                  if (count($red[0]) > 1)
+                  {
+                     $rsl = $red[0];
+                  }
+                  else
+                  { $rsl = $red[0][0]; }
+               }
             }
-            elseif ($eac == 2)
+            else
             {
-               print_r($red[0]);
-               print_r($red[1]);
-            }
-            elseif ($eac == 3)
-            {
-               print_r($red[0]);
-               print_r($red[1]);
-               print_r($red[2]);
+               foreach ($red as $erv)
+               {
+                  $tpe = self::typeOf($erv);
+
+                  if (count($erv) > 0)
+                  {
+                     $tpe = self::typeOf($erv[0]);
+
+                     if (($tpe == 'arr') || ($tpe == 'obj'))
+                     {
+                        if (count($erv[0]) > 0)
+                        { $rsl[] = $erv[0]; }
+                     }
+                  }
+               }
+
+               end($rsl);
+               $rfk = key($rsl);
+
+               if ((count($rsl) < 2) && (is_int($rfk)))
+               { $rsl = $rsl[0]; }
             }
          // -------------------------------------------------------------------
 
@@ -1553,24 +2065,43 @@
    // -------------------------------------------------------------------------
 
 
+
    // parse objects
    // -------------------------------------------------------------------------
-      private function parse_obj($str, &$gv, &$lv)
+      private function parse_obj($str, &$av)
       {
       // remove matching braces
       // ----------------------------------------------------------------------
       // !! trim($str, '{}');                      // renders unbalanced braces
       // ----------------------------------------------------------------------
-         if ((($str[0] == '{') && substr($str, -1, 1) == '}'))
-         { $str = substr($str, 1, -1); }
+         $fc = $str[0];
+         $lc = substr($str, -1, 1);
+
+         if (($fc == '{') && (substr_count($str, '{') > substr_count($str, '}')))
+         { $str = substr($str, 1, strlen($str)); }
+
+         if (($lc == '}') && (substr_count($str, '}') > substr_count($str, '{')))
+         { $str = substr($str, 0, -1); }
+
+         $fc = $str[0];
+         $lc = substr($str, -1, 1);
+
+         if (($fc == '{') && ($lc == '}'))
+         {
+            $tmp = substr($str, 1, -1);
+
+            if (substr_count($tmp, '{') == substr_count($tmp, '}'))
+            { $str = $tmp; }
+         }
       // ----------------------------------------------------------------------
 
       // locals
       // ----------------------------------------------------------------------
          $st = chr(176);                              // string token
          $sl = strlen($str);                          // string length
-         $rc = array($st.'({[',']})'.$st);            // record chars bgn & end
-         $rl = 0;                                     // record level
+         $rc = array('({[',']})');                    // record chars bgn & end
+         $rl = array();                               // record level
+         $qs = 0;                                     // quoted string
          $oo = ':,;';                                 // object operators
          $sb = '';                                    // string buffer
          $ok = null;                                  // obkect key
@@ -1589,18 +2120,34 @@
 
          // "record as string" toggle
          // -------------------------------------------------------------------
-            if     (($rl<1) && (strpos($rc[0], $c) !== false)) {$rl++;}  // bgn
-            elseif (($rl>0) && (strpos($rc[1], $c) !== false)) {$rl--;}  // end
+            if ($c == $st){ $qs = (($qs < 1) ? 1 : 0); }
+
+            if (strpos($rc[0], $c) !== false)
+            {
+               $fi = (-1 - strpos($rc[0], $c));
+               $ec = substr($rc[1], $fi, 1);
+               $rl[] = $ec;
+
+            }  // bgn
+            elseif (strpos($rc[1], $c) !== false)
+            {
+               end($rl);
+               $ec = $rl[key($rl)];
+
+               if ($c == $ec)
+               { array_pop($rl); }
+
+            }  // end
          // -------------------------------------------------------------------
 
          // build definiion
          // -------------------------------------------------------------------
-            if ($rl > 0)
+            if ((count($rl) > 0) || ($qs > 0))
             { $sb .= $c; }                            // record as string
             else
             {
                if (strpos($oo, $c) === false)
-               { $sb .= $c;}
+               { $sb .= $c; }
 
                if ($c == ':')
                {
@@ -1615,15 +2162,15 @@
                   {
                      $ov = $sb;
                      $sb = '';
-                     $vd = self::exp_data($ov, $gv, $lv);
+                     $vd = self::str_to_data($ov, $av);
                      $tp = $vd['tpe'];
 
                      if ($tp == 'exp')
-                     { $rs[$ok] = self::parse_exp($vd['val'], $gv, $lv); }
+                     { $rs[$ok] = self::parse_exp($vd['val'], $av); }
                      elseif ($tp == 'obj')
-                     { $rs[$ok] = self::parse_obj($vd['val'], $gv, $lv); }
+                     { $rs[$ok] = self::parse_obj($vd['val'], $av); }
                      elseif ($tp == 'arr')
-                     { $rs[$ok] = self::parse_arr($vd['val'], $gv, $lv); }
+                     { $rs[$ok] = self::parse_arr($vd['val'], $av); }
                      else
                      { $rs[$ok] = $vd['val']; }
                   }
@@ -1641,9 +2188,10 @@
    // -------------------------------------------------------------------------
 
 
+
    // parse arrays
    // -------------------------------------------------------------------------
-      private function parse_arr($str, &$gv, &$lv)
+      private function parse_arr($str, &$av)
       {
       // remove matching braces
       // ----------------------------------------------------------------------
@@ -1657,8 +2205,10 @@
       // ----------------------------------------------------------------------
          $st = chr(176);                              // string token
          $sl = strlen($str);                          // string length
-         $rc = array($st.'({[',']})'.$st);            // record chars bgn & end
-         $rl = 0;                                     // record level
+         $rc = array('({[',']})');                    // record chars bgn & end
+         $rl = array();                               // record level
+         $qs = 0;                                     // quoted string
+         $ec = '';                                    // record end char
          $sb = '';                                    // string buffer
          $li = null;                                  // list item
          $rs = array();                               // result
@@ -1672,36 +2222,52 @@
          // -------------------------------------------------------------------
             $c = $str[$i];
          // -------------------------------------------------------------------
-//echo $c;
+
          // "record as string" toggle
          // -------------------------------------------------------------------
-            if     (($rl<1) && (strpos($rc[0], $c) !== false)) {$rl++;}  // bgn
-            elseif (($rl>0) && (strpos($rc[1], $c) !== false)) {$rl--;}  // end
+            if ($c == $st){ $qs = (($qs < 1) ? 1 : 0); }
+
+            if (strpos($rc[0], $c) !== false)
+            {
+               $fi = (-1 - strpos($rc[0], $c));
+               $ec = substr($rc[1], $fi, 1);
+               $rl[] = $ec;
+
+            }  // bgn
+            elseif (strpos($rc[1], $c) !== false)
+            {
+               end($rl);
+               $ec = $rl[key($rl)];
+
+               if ($c == $ec)
+               { array_pop($rl); }
+
+            }  // end
          // -------------------------------------------------------------------
 
          // build definiion
          // -------------------------------------------------------------------
-            if ($rl > 0)
+            if ((count($rl) > 0) || ($qs > 0))
             { $sb .= $c; }                            // record as string
             else
             {
                if ($c != ',')
-               { $sb .= $c;}
+               { $sb .= $c; }
 
                if (($c == ',') || ($i == ($sl -1)))
                {
                   $li = $sb;
                   $sb = '';
 
-                  $vd = self::exp_data($li, $gv, $lv);
+                  $vd = self::str_to_data($li, $av);
                   $tp = $vd['tpe'];
 
                   if ($tp == 'exp')
-                  { $rs[] = self::parse_exp($vd['val'], $gv, $lv); }
+                  { $rs[] = self::parse_exp($vd['val'], $av); }
                   elseif ($tp == 'obj')
-                  { $rs[] = self::parse_obj($vd['val'], $gv, $lv); }
+                  { $rs[] = self::parse_obj($vd['val'], $av); }
                   elseif ($tp == 'arr')
-                  { $rs[] = self::parse_arr($vd['val'], $gv, $lv); }
+                  { $rs[] = self::parse_arr($vd['val'], $av); }
                   else
                   { $rs[] = $vd['val']; }
                }
@@ -1719,361 +2285,16 @@
 
 
 
-   // parse JSAM context into a multi-dimensional array, with given vars
-   // -------------------------------------------------------------------------
-      private function get_context($jd, &$gv, $fn)
-      {
-      // arguments
-      // ----------------------------------------------------------------------
-      // $jd ~ jsam document
-      // $gv ~ global variables
-      // $fn ~ file name
-      // ----------------------------------------------------------------------
-
-      // constants (never changes during runtime)
-      // ----------------------------------------------------------------------
-         $js = self::$conf;
-         $dl = chr(186);                       // delimiter       (double pipe)
-         $ph = chr(176);                       // place holder    (doped block)
-         $ds = strlen($jd);                    // document size
-         $mi = ($ds-1);                        // maximum index
-         $st = array('"'=>1, "'"=>1, '`'=>1);  // string tokens   (each toggle)
-         $ct = array('//'=>"\n", '/*'=>'*/');  // comment tokens  (begin & end)
-         $rd = $js['dsc'];                     // reference description
-      // ----------------------------------------------------------------------
-
-
-      // variables (changes during runtime)
-      // ----------------------------------------------------------------------
-         $lc = array(1,0);       // curent Line and Column
-
-         $cn = 'doc';            // context name
-         $ca = array($cn);       // context array
-         $cl = 0;                // context array
-         $co = $js['cat'];       // context operators
-         $cb = null;             // context boolean
-
-         $dc = '';               // double characters
-         $cr = 'ds';             // current reference
-         $pr = $cr;              // previous reference
-
-         $xm = $js['crm'][$cn];  // context matrix
-         $xr = $xm[$pr];         // reference matrix
-         $rp = "$cn.$pr.$cr";    // reference path
-         $el = 0;                // expression level
-
-         $sc = false;            // string context    (quoted)
-         $vc = false;            // void context      (commented)
-
-         $kb = '';               // key buffer
-         $vb = '';               // value buffer
-         $sb = '';               // string buffer
-         $eb = '';               // expression buffer
-
-         $lv = array();          // local variables
-         $pa = array();          // path array
-         $df = array();          // definition
-         $rs = array();          // result
-      // ----------------------------------------------------------------------
-
-
-      // walk through code
-      // ----------------------------------------------------------------------
-         for ($i=0; $i<$ds; $i++)
-         {
-         // character variables
-         // ----------------------------------------------------------------------
-            $pc = ($i>0 ? $jd[$i-1] : null);             // previous character
-            $cc = $jd[$i];                               // current character
-            $nc = ($i<$mi ? $jd[$i+1] : null);           // next character
-            $dc = (($nc !== null) ? ($cc.$nc) : null);   // double chars
-         // ----------------------------------------------------------------------
-
-         // line & column count
-         // ----------------------------------------------------------------------
-            if ($cc == "\n") {$lc[0]++; $lc[1]=0;} else {$lc[1]++;}
-         // ----------------------------------------------------------------------
-
-
-         // void context (comment) toggle
-         // ----------------------------------------------------------------------
-            if ($sc === false)
-            {
-               if ($vc === false)
-               {
-                  if (($dc !== null) && isset($ct[$dc]))
-                  { $vc = $ct[$dc]; }
-                  elseif (($pc.$cc) == '*/')
-                  { continue; }
-               }
-               else
-               {
-                  if ($cc == $vc)
-                  { $vc = false; }
-                  elseif (($dc !== null) && ($dc == $vc))
-                  {
-                     $vc = false;
-                     continue;
-                  }
-               }
-            }
-         // ----------------------------------------------------------------------
-
-
-         // skip the rest if current char is commented or escaped
-         // ----------------------------------------------------------------------
-            if ($vc !== false)
-            { continue; }
-            elseif (($sc !== false) && ($pc == '\\') && ($cc !== $sc))
-            { continue; }
-         // ----------------------------------------------------------------------
-
-
-         // quoted string context toggle
-         // ----------------------------------------------------------------------
-            if (isset($st[$cc]))
-            {
-               if ($sc === false)
-               { $sc = $cc; }
-               else if (($cc === $sc) && ($pc !== '\\'))
-               { $sc = false; }
-            }
-            else
-            {
-               if ($sc !== false)
-               {
-                  if (($sc !== '`') && ($cc == "\n"))
-                  { $sc = false; }
-
-                  if ($cc == '\\')
-                  { continue; }
-               }
-            }
-         // ----------------------------------------------------------------------
-
-
-         // define context references
-         // ----------------------------------------------------------------------
-            if (($cr !== null) && ($cr != 'ws'))
-            {
-               $pr = $cr;                         // pvs ref  (for sub context)
-               $xr = $xm[$pr];                    // set reference matrix
-            }
-
-            $cr = null;                           // reset current reference
-
-            if ($sc !== false) {$cr='qs';}        // ref is in str context
-            elseif (isset($st[$cc]))
-            { $cr='qs'; }  // ref is a str ctx char
-
-            if (($sc===false) && ($cr===null))    // ref is not str & is unset
-            {
-               if (isset($js['tkn'][$cc]))
-               { $cr = $js['tkn'][$cc]; }         // ref is a token
-               else
-               {
-                  if (ctype_space($cc))
-                  { $cr = 'ws'; }                 // white space
-                  else
-                  {
-                     if (is_numeric($cc))
-                     { $cr = 'dn'; }              // decimal number
-                     else
-                     { $cr = 'pt'; }              // plain text
-                  }
-               }
-            }
-
-            if (($cn == 'obj') && (strpos('os kn ld cd', $pr) !== false) && (strpos('pt qs nr so', $cr) !== false))
-            { $cr = 'kn'; }
-
-            if ($i == $mi) {$cr = 'de';}          // document end
-
-            $rp = "$cn.$pr.$cr";                  // reference path
-         // ----------------------------------------------------------------------
-
-
-         // validate context references if not string
-         // ----------------------------------------------------------------------
-            $er = 0;
-
-            if ($xr[$cr] < 1) {$er++;}                     // if ref booln is 0
-            if (($cr == 'de') && ($cn != 'doc')) {$er++;}  // if brace mismatch
-
-            if ($er > 0)
-            { self::halt('Syntax', 'unexpected "'.$rd[$cr].'"', $lc, $fn, $rp); }
-         // ----------------------------------------------------------------------
-
-         // define current context name and level
-         // ----------------------------------------------------------------------
-            if ($sc === false)
-            {
-               $cb = (isset($co[$cc]) ? $co[$cc][1] : null);  // get ctx bolean
-
-               if ($cb !== null)
-               {
-                  if ($cb > 0)
-                  { $ca[] = $co[$cc][0]; }                    // ctx level up
-                  elseif ($cn == $co[$cc][0])
-                  { array_pop($ca); }                         // ctx level down
-
-                  end($ca);
-
-                  $cl = key($ca);                             // context level
-                  $cn = $ca[$cl];                             // context name
-                  $cb = null;                                 // reset boolean
-                  $xm = $js['crm'][$cn];                      // set ctx matrix
-               }
-            }
-         // ----------------------------------------------------------------------
-
-
-         // build expressions
-         // ----------------------------------------------------------------------
-            if ($cr == 'es')
-            { $el++; }
-
-            if (($el > 0) && ($cr != 'ws'))
-            {
-               if (isset($st[$cc]) && ($pc != '\\'))
-               { $eb .= $ph; }
-               else
-               { $eb .= $cc; }
-            }
-
-            if ($cr == 'ee')
-            {
-               $el--;
-
-               if ($el < 1)
-               {
-                  $xr = self::parse_exp($eb, $gv, $lv);
-                  $eb = '';
-
-                  echo "\n---------------\n";
-//                  var_dump($xr);
-                  print_r($xr);
-                  echo "\n---------------";
-//                  exit;
-               }
-            }
-         // ----------------------------------------------------------------------
-
-
-         }
-      // ----------------------------------------------------------------------
-
-      // if only def is defined, return it, else return rsl
-      // ----------------------------------------------------------------------
-         if (count($rs) < 1)
-         { return $df; }
-         else
-         { return $rs; }
-      // ----------------------------------------------------------------------
-      }
-   // -------------------------------------------------------------------------
-
-
-   // prepare context
-   // -------------------------------------------------------------------------
-      public function parse($dfn, &$vrs=null, $obj=false)
-      {
-      // get cofig if not set
-      // ----------------------------------------------------------------------
-         if (self::$conf === null)
-         { self::$conf = json_decode(file_get_contents('src/cfg/jsam.json'), true); }
-      // ----------------------------------------------------------------------
-
-      // convert given vars tp JSAM globals
-      // ----------------------------------------------------------------------
-         $vrs = self::toJsamGlobals($vrs);
-      // ----------------------------------------------------------------------
-
-      // if definition is a path, get contents
-      // ----------------------------------------------------------------------
-         if (gettype($dfn) === 'string')
-         {
-            if (file_exists($dfn))
-            {
-               $fnm = basename($dfn);
-               $dfn = file_get_contents($dfn);
-            }
-            else
-            {
-               echo "\n".'JSAM Reference Error: "'.$dfn.'" does not exist';
-               exit;
-            }
-         }
-         else
-         { $fnm = null; }
-      // ----------------------------------------------------------------------
-
-
-      // get result as multi-dimensional array
-      // ----------------------------------------------------------------------
-         $rsl = self::get_context($dfn, $vrs, $fnm);
-      // ----------------------------------------------------------------------
-
-
-      // if object is required, do this trick, hey don't judge, it works ;)
-      // ----------------------------------------------------------------------
-         if ($obj === true)
-         { $rsl = json_decode(json_encode($rsl)); }
-      // ----------------------------------------------------------------------
-
-
-      // return result
-      // ----------------------------------------------------------------------
-         return $rsl;
-      // ----------------------------------------------------------------------
-      }
-   // -------------------------------------------------------------------------
-
-
-   // GET COMPILER MODULE
-   // -------------------------------------------------------------------------
-      public function acquire($pth)
-      {
-         require($pth);
-
-         if (isset($module->exports))
-         { $mod = $module->exports; }
-         elseif (isset($module))
-         { $mod = $module; }
-         elseif (isset($exports))
-         { $mod = $exports; }
-         else
-         {
-            echo 'JSAM extension module expected from: "'.$pth.'"';
-            exit;
-         }
-
-         if (!isset($mod->config['mimeType']))
-         {
-            echo "\n".'JSAM config & mime-type expected from: "'.$pth.'"';
-            exit;
-         }
-
-         self::$forge[$mod->config['mimeType']] = $mod;
-
-         return true;
-      }
-   // -------------------------------------------------------------------------
-
-
    // BUILD RESULT WITH COMPILER
    // -------------------------------------------------------------------------
       public function build($dfn, $vrs=null)
       {
          $cmp = key((array)$dfn);
 
-         if (isset(self::$forge[$cmp]))
-         { $rsl = self::$forge[$cmp]->render($dfn, jsam_globals($vrs)); }
+         if (isset(self::$comp[$cmp]))
+         { $rsl = self::$comp[$cmp]->render($dfn, $vrs); }
          else
-         {
-            echo "\n".'JSAM compiler for type: "'.$cmp.'" is undefined';
-            exit;
-         }
+         { self::halt('compiler for type: "'.$cmp.'" is undefined'); }
 
          return $rsl;
       }

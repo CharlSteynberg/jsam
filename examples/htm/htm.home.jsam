@@ -1,5 +1,5 @@
 
-   ({greet:'Welcome! BAby!!!!!'});
+   (greet = 'Welcome! BAby!!!!!');
 
    ({'text/html':
    [
@@ -17,14 +17,8 @@
       {body:
       [
          {h1:(184045 / 15)},
-//      	({h2:Lalala}),
+      	({h2:Lalala}),
          {span:'ello, today is just great!'},
          {img:'examples/etc/original.jpg'},
-/*
-      	({
-            call:{span:a}
-      		with:(a=0, a<5, a++),
-      	})
-*/
       ]}
    ]});

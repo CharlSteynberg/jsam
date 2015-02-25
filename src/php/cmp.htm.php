@@ -59,7 +59,7 @@
                {
                   if (($k !== $name) && ($k !== 'src'))
                   {
-                     if (preg_match('/^[a-z\/]+$/', $k) && (gettype($v) === 'array') && isset(JSAM::$forge[$k]))
+                     if (preg_match('/^[a-z\/]+$/', $k) && (gettype($v) === 'array') && isset(JSAM::$comp[$k]))
                      {
                         $node['src'] = array();
                         $node['src'][$k] = $v;
@@ -129,7 +129,7 @@
                      {
                      // if first key's value is compiler reference
                      // -------------------------------------------------------
-                        if ((gettype($node['src']) === 'array') && preg_match('/^[a-z\/\+\-]+$/', $fkvl) && isset(JSAM::$forge[$fkvl]))
+                        if ((gettype($node['src']) === 'array') && preg_match('/^[a-z\/\+\-]+$/', $fkvl) && isset(JSAM::$comp[$fkvl]))
                         {
                            $temp = $node['src'];
                            $node['src'] = array();
@@ -286,8 +286,8 @@
                   {
                      $kn = array_keys($data)[0];
 
-                     if (preg_match('/^[a-z\/\+\-]+$/', $kn) && (gettype($data[$kn]) === 'array') && isset(JSAM::$forge[$kn]))
-                     { $data = JSAM::$forge[$kn]->render($data, $vrs)->content; }
+                     if (preg_match('/^[a-z\/\+\-]+$/', $kn) && (gettype($data[$kn]) === 'array') && isset(JSAM::$comp[$kn]))
+                     { $data = JSAM::$comp[$kn]->render($data, $vrs)->content; }
                   }
 
                   if (gettype($data) == 'array')
