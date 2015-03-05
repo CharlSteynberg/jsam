@@ -44,7 +44,7 @@
 
    // error handling
    // -------------------------------------------------------------------------
-      private function halt($msg='', $err='', $fnm='', $pos='', $crp='')
+      private static function halt($msg='', $err='', $fnm='', $pos='', $crp='')
       {
          if ($msg === '')
          { exit(); }
@@ -74,7 +74,7 @@
 
    // get JSAM configuration
    // -------------------------------------------------------------------------
-      public function set_conf($pth)
+      public static function set_conf($pth)
       {
          if (!file_exists($pth))
          { self::halt('path "'.$pth.'" is undefined'); }
@@ -87,7 +87,7 @@
 
    // get vars & globals
    // -------------------------------------------------------------------------
-      private function get_vars(&$vrs)
+      private static function get_vars(&$vrs)
       {
          $tpe = gettype($vrs);
 
@@ -95,7 +95,7 @@
          { $vrs = array(); }
 
          if ($tpe == 'object')
-         { $vrs = json_decode(json_encode($vrs)); }
+         { $vrs = json_decode(json_encode($vrs), true); }
 
          date_default_timezone_set(self::$conf['ltz']);
 
@@ -123,7 +123,7 @@
 
    // GET COMPILER MODULE
    // -------------------------------------------------------------------------
-      public function acquire($pth)
+      public static function acquire($pth)
       {
          require($pth);
 
@@ -149,7 +149,7 @@
 
    // prepare context
    // -------------------------------------------------------------------------
-      public function parse($dfn, &$vrs=null, $obj=false, $ers=true)
+      public static function parse($dfn, &$vrs=null, $obj=false, $ers=true)
       {
       // arguments legend
       // ----------------------------------------------------------------------
@@ -182,15 +182,23 @@
          $dfn = str_replace(';)', ')', '('.self::minify($dfn, $fnm, $ers).')');
       // ----------------------------------------------------------------------
 
-      // parse jsam text
+      // return new array if empty else parse
       // ----------------------------------------------------------------------
-         $rsl = self::parse_exp($dfn, $vrs);
+         if (strlen($dfn) < 5)
+         {
+            if ($obj === true)
+            { return new stdClass(); }
+            else
+            { return array(); }
+         }
+         else
+         { $rsl = self::parse_exp($dfn, $vrs); }
       // ----------------------------------------------------------------------
 
       // if object is required, do this trick, hey don't judge, it works ;)
       // ----------------------------------------------------------------------
          if ($obj === true)
-         { $rsl = json_decode(json_encode($rsl)); }
+         { $rsl = json_decode(json_encode($rsl), false); }
       // ----------------------------------------------------------------------
 
       // return result
@@ -204,7 +212,7 @@
 
    // minify jsam text, halt on -and report errors
    // -------------------------------------------------------------------------
-      private function minify($jd, $fn, $er)
+      private static function minify($jd, $fn, $er)
       {
       // arguments legend
       // ----------------------------------------------------------------------
@@ -302,9 +310,9 @@
                if (isset($st[$cc]))
                {
                   if ($sc === false)
-                  { $sc = $cc; }
+                  { $sc = $cc; $cc=$ph; }
                   else if (($cc === $sc) && ($pc !== '\\'))
-                  { $sc = false; }
+                  { $sc = false; $cc=$ph; }
                }
                else
                {
@@ -335,10 +343,7 @@
                   { $rs = substr($rs, 0, -1); }
                }
 
-               if (isset($st[$cc]) && ($pc != '\\'))
-               { $rs .= $ph; }
-               else
-               { $rs .= $cc; }
+               $rs .= $cc;
             // ----------------------------------------------------------------
             }
          // -------------------------------------------------------------------
@@ -424,9 +429,9 @@
                if (isset($st[$cc]))
                {
                   if ($sc === false)
-                  { $sc = $cc; }
+                  { $sc = $cc; $cc=$ph; }
                   else if (($cc === $sc) && ($pc !== '\\'))
-                  { $sc = false; }
+                  { $sc = false; $cc=$ph; }
                }
                else
                {
@@ -453,7 +458,7 @@
                $cr = null;                           // reset current reference
 
                if ($sc !== false) {$cr='qs';}        // ref is in str context
-               elseif (isset($st[$cc]))
+               elseif ($cc == $ph)
                { $cr='qs'; }  // ref is a str ctx char
 
                if (($sc===false) && ($cr===null))    // ref is not str & is unset
@@ -549,10 +554,7 @@
                   { $rs = substr($rs, 0, -1); }
                }
 
-               if (isset($st[$cc]) && ($pc != '\\'))
-               { $rs .= $ph; }
-               else
-               { $rs .= $cc; }
+               $rs .= $cc;
             // ----------------------------------------------------------------
             }
          // -------------------------------------------------------------------
@@ -570,7 +572,7 @@
 
    // simple identifier data type
    // -------------------------------------------------------------------------
-      private function typeOf($d)
+      private static function typeOf($d)
       {
          $t = gettype($d);
 
@@ -593,7 +595,7 @@
 
    // create and assign context and value according to tree-path
    // -------------------------------------------------------------------------
-      private function sapv($p, &$t, $v=null)
+      private static function sapv($p, &$t, $v=null)
       {
          $p = is_array($p) ? $p : explode('.', $p);
          $x =& $t;
@@ -613,7 +615,7 @@
 
    // retrieve context value from tree-path
    // -------------------------------------------------------------------------
-      private function gapv($p, $t)
+      private static function gapv($p, $t)
       {
          if (is_array($p))
          {
@@ -641,7 +643,7 @@
 
    // parse string to data
    // -------------------------------------------------------------------------
-      private function str_to_data($xp, &$av)
+      private static function str_to_data($xp, &$av)
       {
       // arguments legend
       // ----------------------------------------------------------------------
@@ -749,7 +751,7 @@
 
    // calculate expressions
    // -------------------------------------------------------------------------
-      private function calc_exp($ld, $op, $rd, &$av)
+      private static function calc_exp($ld, $op, $rd, &$av)
       {
       // arguments legend
       // ----------------------------------------------------------------------
@@ -1671,7 +1673,7 @@
 
    // parse jsam text
    // -------------------------------------------------------------------------
-      private function parse_exp($xp, &$av)
+      private static function parse_exp($xp, &$av)
       {
       // arguments legend
       // ----------------------------------------------------------------------
@@ -2068,7 +2070,7 @@
 
    // parse objects
    // -------------------------------------------------------------------------
-      private function parse_obj($str, &$av)
+      private static function parse_obj($str, &$av)
       {
       // remove matching braces
       // ----------------------------------------------------------------------
@@ -2191,8 +2193,11 @@
 
    // parse arrays
    // -------------------------------------------------------------------------
-      private function parse_arr($str, &$av)
+      private static function parse_arr($str, &$av)
       {
+         if (self::typeOf($str) == 'arr')
+         { return $str; }
+
       // remove matching braces
       // ----------------------------------------------------------------------
       // !! trim($str, '{}');                      // renders unbalanced braces
@@ -2287,7 +2292,7 @@
 
    // BUILD RESULT WITH COMPILER
    // -------------------------------------------------------------------------
-      public function build($dfn, $vrs=null)
+      public static function build($dfn, $vrs=null)
       {
          $cmp = key((array)$dfn);
 
